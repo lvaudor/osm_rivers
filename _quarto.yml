@@ -1,0 +1,5 @@
+project:
+  title: "OSM_rivers"
+  type: website
+  output-dir: docs
+

@@ -1,0 +1,167 @@
+---
+title: "OSM_rivers"
+format: html
+editor: visual
+execute:
+  echo: false
+  warning: false
+---
+
+```{r packages}
+library(tidyverse)
+library(osmdata) 
+library(sf) 
+library(leaflet) 
+```
+
+```{r bboxR,cache=TRUE}
+bboxR=getbb("Rhone 69",format_out="sf_polygon")[[1]] %>% 
+  st_make_valid()
+mycrs=st_crs(bboxR)
+```
+
+```{r get_osmdata}
+get_osmdata=function(key, value, bbox){
+  osmdata_file=glue::glue("data/osmdata/{key}-{value}-{bbox_to_string(bbox)}.RDS")
+  if(!file.exists(osmdata_file)){
+      result=opq(bbox = bbox, timeout=120)%>%
+        add_osm_feature(key = key,
+                        value = value) %>% 
+        osmdata_sf() %>% 
+        saveRDS(osmdata_file)
+  }
+  result=readRDS(osmdata_file)
+  return(result)
+}
+
+pick_osmdata=function(key,value,label=value, geom="osm_lines", bbox, buffer=NULL){
+  #get osmdata from file
+  osmdata_file=glue::glue("data/osmdata/{key}-{value}-{bbox_to_string(bbox)}.RDS")
+  osmdata_result=readRDS(osmdata_file)
+  # pick geom and intersect if not already done
+  layer_file=glue::glue("data/layers/{key}-{value}-{bbox_to_string(bbox)}.RDS")
+  if(!file.exists(layer_file)){
+      result=osmdata_result[[geom]] 
+      if(!is.null(result)){
+        result=result %>%  
+          mutate(label=label) %>% 
+          select(label)
+      if(!is.null(buffer)){
+        result=result %>%
+          mutate(valid=st_is_valid(geometry)) %>% 
+          filter(valid) %>% 
+          select(-valid)%>% 
+        st_intersection(buffer)
+      }
+      }
+      saveRDS(result,file=layer_file)
+  }
+  result=readRDS(file=layer_file)
+  return(result)
+}
+```
+
+```{r buffer_rivers, cache=TRUE}
+rivers_res <- get_osmdata("waterway","river",bboxR)
+rivers=rivers_res[["osm_multilines"]]
+buffer_rivers=rivers %>% 
+   st_intersection(bboxR) %>% 
+   st_buffer(dist=500) %>% 
+   st_union()%>% 
+   st_set_crs(mycrs) %>% 
+   st_make_valid()
+```
+
+## Key-Value
+
+```{r tib_osm}
+tib_osm=read_csv2("data/tib_osm.csv")
+tib_osm=tib_osm %>% 
+  mutate(data=purrr::map2(.x=key,.y=value,~get_osmdata(.x,.y,bbox=bboxR)))%>%
+  mutate(data=purrr::pmap(list(key=key,value=value,geom=geom),.f=pick_osmdata,bbox=bboxR,buffer=buffer_rivers)) %>% 
+  mutate(n=purrr::map_int(data,nrow))
+tib_osm %>% select(-data) %>% reactable::reactable()
+```
+## Calcul des couches
+
+```{r arrange_layers}
+form_layer=function(mygroup,mygeom){
+  result=tib_osm %>% 
+    filter(n>0) %>% 
+    filter(group==mygroup,geom==mygeom) %>% 
+    unnest(cols="data") %>% 
+    st_as_sf() %>% 
+    mutate(popup=glue::glue("<p>group: {mygroup}</p><p>label: {label}</p>"))
+}
+tib_layers=tib_osm %>% 
+  select(group,geom) %>% 
+  unique()
+layers=purrr::map2(tib_layers$group,tib_layers$geom, form_layer)
+```
+
+## Legend
+
+```{r legend_lines}
+form_palette=function(layer,palette=topo.colors){
+  categories=unique(layer$label)
+  factpal= colorFactor(palette(length(categories)), categories)
+  return(factpal)
+}
+plot_palette=function(group,palette=topo.colors){
+  layer=get(group,envir=parent.env(environment()))
+  categories=unique(layer$label)
+  factpal=form_palette(layer,palette)  
+  cols=factpal(categories)
+  names(cols)=categories
+  ggplot(layer,aes(x=label, y=1,fill=label))+
+    geom_bar(stat="identity")+
+    scale_fill_manual(values=cols)+
+    coord_flip()+
+    ggtitle(unique(layer$type))
+}
+```
+
+## Map
+
+```{r map}
+addToMap=function(map,i){
+  geom=tib_layers$geom[i]
+  if(geom=="osm_points"){f=addCircles}
+  if(geom=="osm_polygons"){f=addPolygons}
+  if(geom=="osm_lines"){f=addPolylines}
+  map=map %>% 
+    f(data=layers[[i]],
+      group=tib_layers$group[i],
+      color=~form_palette(layers[[i]],rainbow)(label),
+      popup=~popup)
+  return(map)
+}
+map=leaflet() %>% 
+    setView(lat=45.75493,
+            lng=4.83636,
+            zoom=11) %>% 
+    addTiles(group = "OSM map") %>%
+    addProviderTiles(providers$Esri.WorldImagery,
+                     group = "Photo") %>%
+    addPolygons(data=buffer_rivers,
+                group="OSM_streams") %>% 
+  addToMap(1) %>% 
+  addToMap(2) %>% 
+  addToMap(3) %>% 
+  addToMap(4) %>% 
+  addToMap(5) %>% 
+  addToMap(6) %>% 
+  addToMap(7) %>% 
+  addToMap(8) %>% 
+  addToMap(9) %>% 
+  addLayersControl(
+    overlayGroups = c("OSM map",
+                      "Photo",
+                      "OSM_streams",
+                      unique(tib_layers$group)),
+    options = layersControlOptions(collapsed = FALSE)) %>% 
+    hideGroup("Photo") %>% 
+    hideGroup("Toner Lite")
+map 
+
+```
