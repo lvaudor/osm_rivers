@@ -96,6 +96,7 @@ form_layer=function(mygroup,mygeom){
 tib_layers=tib_osm %>% 
   select(group,geom) %>% 
   unique()
+
 layers=purrr::map2(tib_layers$group,tib_layers$geom, form_layer)
 ```
 
@@ -136,6 +137,7 @@ addToMap=function(map,i){
       popup=~popup)
   return(map)
 }
+
 map=leaflet() %>% 
     setView(lat=45.75493,
             lng=4.83636,
